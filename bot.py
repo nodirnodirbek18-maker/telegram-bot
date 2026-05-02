@@ -2,6 +2,7 @@
 import logging
 import json
 import os
+import asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -17,8 +18,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DATA_FILE = "data.json"
-
-# Conversation states
 WAITING_DATE, WAITING_TIME = range(2)
 
 def load_data():
@@ -64,7 +63,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*/jadval <sana> <vaqt> <nomi>* — Uchrashuv\n"
         "  Misol: /jadval 2026-05-03 14:00 Uchrashuv\n"
         "*/uchrashuvlar* — Uchrashuvlar\n"
-        "*/qidir <so'rov>* — Qidirish",
+        "*/qidir <so'rov>* — Qidirish\n"
+        "*/bekor* — Amalni bekor qilish",
         parse_mode="Markdown"
     )
 
@@ -90,7 +90,6 @@ async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["tasks"].append(task)
     save_data(data)
 
-    # Joriy task ID ni saqlab qo'yamiz
     context.user_data["pending_task_id"] = task["id"]
 
     keyboard = [
@@ -102,6 +101,7 @@ async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    return ConversationHandler.END
 
 async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
@@ -111,7 +111,7 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "📋 *Vazifalar:*\n\n"
     for t in data["tasks"]:
         status = "✅" if t["done"] else "⬜"
-        remind = f"\n   ⏰ *{t['remind_at']}*" if t.get("remind_at") and not t["done"] else ""
+        remind = f"\n   ⏰ {t['remind_at']}" if t.get("remind_at") and not t["done"] else ""
         text += f"{status} *{t['id']}.* {t['text']}{remind}\n\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -134,7 +134,7 @@ async def complete_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❗ Topilmadi.")
 
 # ========================
-# ESLATMA QO'SHISH (Conversation)
+# ESLATMA CONVERSATION
 # ========================
 async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -143,7 +143,7 @@ async def reminder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "set_reminder":
         await query.edit_message_text(
             "📅 *Qaysi sanada eslatay?*\n\n"
-            "Formatda yozing: `KK.OO.YYYY`\n"
+            "Quyidagi formatda yozing:\n`KK.OO.YYYY`\n\n"
             "Misol: `03.05.2026`",
             parse_mode="Markdown"
         )
@@ -167,8 +167,8 @@ async def receive_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_TIME
     except ValueError:
         await update.message.reply_text(
-            "❗ Noto'g'ri format. Qaytadan kiriting:\n"
-            "Misol: `03.05.2026`",
+            "❗ Noto'g'ri format!\n\n"
+            "Qaytadan kiriting: `03.05.2026`",
             parse_mode="Markdown"
         )
         return WAITING_DATE
@@ -176,13 +176,13 @@ async def receive_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_text = update.message.text.strip()
     try:
-        time_obj = datetime.strptime(time_text, "%H:%M")
+        datetime.strptime(time_text, "%H:%M")
         date_str = context.user_data.get("reminder_date")
         remind_dt = datetime.strptime(f"{date_str} {time_text}", "%Y-%m-%d %H:%M")
 
         if remind_dt <= datetime.now():
             await update.message.reply_text(
-                "❗ Bu vaqt o'tib ketgan! Kelajakdagi sana kiriting.\n\n"
+                "❗ Bu vaqt o'tib ketgan!\n\n"
                 "📅 Sanani qaytadan kiriting: `03.05.2026`",
                 parse_mode="Markdown"
             )
@@ -208,7 +208,7 @@ async def receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except ValueError:
         await update.message.reply_text(
-            "❗ Noto'g'ri format. Misol: `09:00`",
+            "❗ Noto'g'ri format!\n\nMisol: `09:00`",
             parse_mode="Markdown"
         )
         return WAITING_TIME
@@ -281,65 +281,72 @@ async def search_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ========================
-# ESLATMALAR TEKSHIRISH
+# ESLATMALAR LOOP (job_queue siz)
 # ========================
-async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
-    data = load_data()
-    now = datetime.now()
-    changed = False
+async def reminder_loop(bot):
+    while True:
+        try:
+            data = load_data()
+            now = datetime.now()
+            changed = False
 
-    for task in data["tasks"]:
-        if task.get("remind_at") and not task.get("reminded") and not task["done"]:
-            remind_dt = datetime.strptime(task["remind_at"], "%Y-%m-%d %H:%M")
-            diff = (remind_dt - now).total_seconds() / 60
-            if -2 <= diff <= 2:
-                for chat_id in data.get("chat_ids", []):
-                    try:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"🔔 *Vazifa eslatmasi!*\n\n📌 {task['text']}\n⏰ {task['remind_at']}",
-                            parse_mode="Markdown"
-                        )
-                    except Exception as e:
-                        logger.error(f"Xato: {e}")
-                task["reminded"] = True
-                changed = True
+            for task in data["tasks"]:
+                if task.get("remind_at") and not task.get("reminded") and not task["done"]:
+                    remind_dt = datetime.strptime(task["remind_at"], "%Y-%m-%d %H:%M")
+                    diff = (remind_dt - now).total_seconds() / 60
+                    if -2 <= diff <= 2:
+                        for chat_id in data.get("chat_ids", []):
+                            try:
+                                await bot.send_message(
+                                    chat_id=chat_id,
+                                    text=f"🔔 *Vazifa eslatmasi!*\n\n📌 {task['text']}\n⏰ {task['remind_at']}",
+                                    parse_mode="Markdown"
+                                )
+                            except Exception as e:
+                                logger.error(f"Xato: {e}")
+                        task["reminded"] = True
+                        changed = True
 
-    for event in data["events"]:
-        event_dt = datetime.strptime(event["datetime"], "%Y-%m-%d %H:%M")
-        diff = (event_dt - now).total_seconds() / 60
+            for event in data["events"]:
+                event_dt = datetime.strptime(event["datetime"], "%Y-%m-%d %H:%M")
+                diff = (event_dt - now).total_seconds() / 60
 
-        if 28 <= diff <= 32 and not event.get("reminded_30"):
-            for chat_id in data.get("chat_ids", []):
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"⏰ *30 daqiqada uchrashuv!*\n\n📌 {event['name']}\n🗓 {event['datetime']}",
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    logger.error(f"Xato: {e}")
-            event["reminded_30"] = True
-            changed = True
+                if 28 <= diff <= 32 and not event.get("reminded_30"):
+                    for chat_id in data.get("chat_ids", []):
+                        try:
+                            await bot.send_message(
+                                chat_id=chat_id,
+                                text=f"⏰ *30 daqiqada uchrashuv!*\n\n📌 {event['name']}\n🗓 {event['datetime']}",
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e:
+                            logger.error(f"Xato: {e}")
+                    event["reminded_30"] = True
+                    changed = True
 
-        if 3 <= diff <= 7 and not event.get("reminded_5"):
-            for chat_id in data.get("chat_ids", []):
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🔔 *5 daqiqada uchrashuv!*\n\n📌 {event['name']}",
-                        parse_mode="Markdown"
-                    )
-                except Exception as e:
-                    logger.error(f"Xato: {e}")
-            event["reminded_5"] = True
-            changed = True
+                if 3 <= diff <= 7 and not event.get("reminded_5"):
+                    for chat_id in data.get("chat_ids", []):
+                        try:
+                            await bot.send_message(
+                                chat_id=chat_id,
+                                text=f"🔔 *5 daqiqada uchrashuv!*\n\n📌 {event['name']}",
+                                parse_mode="Markdown"
+                            )
+                        except Exception as e:
+                            logger.error(f"Xato: {e}")
+                    event["reminded_5"] = True
+                    changed = True
 
-    if changed:
-        save_data(data)
+            if changed:
+                save_data(data)
+
+        except Exception as e:
+            logger.error(f"Reminder loop xato: {e}")
+
+        await asyncio.sleep(60)
 
 # ========================
-# CALLBACK HANDLER
+# CALLBACK
 # ========================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -385,9 +392,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-# ========================
-# XABAR HANDLER
-# ========================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
     if any(w in text for w in ["salom", "assalomu", "hi", "hello"]):
@@ -398,7 +402,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========================
 # MAIN
 # ========================
-def main():
+async def main():
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
         print("❌ TELEGRAM_BOT_TOKEN topilmadi!")
@@ -406,7 +410,6 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
-    # Eslatma conversation handler
     reminder_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(reminder_callback, pattern="^(set_reminder|skip_reminder)$")],
         states={
@@ -424,15 +427,18 @@ def main():
     app.add_handler(CommandHandler("jadval", add_event))
     app.add_handler(CommandHandler("uchrashuvlar", list_events))
     app.add_handler(CommandHandler("qidir", search_info))
+    app.add_handler(CommandHandler("bekor", cancel))
     app.add_handler(reminder_conv)
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Har daqiqada eslatmalarni tekshirish
-    app.job_queue.run_repeating(check_reminders, interval=60, first=10)
-
     print("🤖 Bot ishga tushdi!")
-    app.run_polling()
+
+    async with app:
+        await app.start()
+        await app.updater.start_polling()
+        # Eslatmalar loop ni parallel ishlatish
+        await reminder_loop(app.bot)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
