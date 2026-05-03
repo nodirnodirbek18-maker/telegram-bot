@@ -4,6 +4,7 @@ import json
 import os
 import asyncio
 import urllib.request
+from google import genai
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 DATA_FILE = "data.json"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={GEMINI_API_KEY}"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={GEMINI_API_KEY}"
 
 # Conversation states
 WAITING_DATE, WAITING_TIME = range(2)
@@ -754,3 +755,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
