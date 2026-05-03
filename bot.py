@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 DATA_FILE = "data.json"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
 # Conversation states
 WAITING_DATE, WAITING_TIME = range(2)
@@ -61,7 +61,8 @@ async def ask_gemini(question: str, context_info: str = "") -> str:
         prompt += f"\n\nSavol: {question}"
 
         payload = json.dumps({
-            "contents": [{"parts": [{"text": prompt}]}]
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1000}
         }).encode("utf-8")
 
         req = urllib.request.Request(
@@ -70,9 +71,17 @@ async def ask_gemini(question: str, context_info: str = "") -> str:
             headers={"Content-Type": "application/json"},
             method="POST"
         )
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=20) as response:
             result = json.loads(response.read().decode("utf-8"))
-            return result["candidates"][0]["content"]["parts"][0]["text"]
+            if "candidates" in result and result["candidates"]:
+                return result["candidates"][0]["content"]["parts"][0]["text"]
+            else:
+                logger.error(f"Gemini kutilmagan javob: {result}")
+                return "❗ AI javob bera olmadi."
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        logger.error(f"Gemini HTTP {e.code}: {body}")
+        return f"❗ AI xizmatida xatolik ({e.code})."
     except Exception as e:
         logger.error(f"Gemini xato: {e}")
         return "❗ Hozir javob bera olmayapman."
@@ -745,4 +754,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
