@@ -25,7 +25,7 @@ GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-
 
 # Conversation states
 WAITING_DATE, WAITING_TIME = range(2)
-WAITING_DONE_TASKS, WAITING_POSTPONE_DATE, WAITING_TOMORROW_TASKS = range(3, 6)
+WAITING_DONE_TASKS, WAITING_POSTPONE_DATE, WAITING_TOMORROW_TASKS, WAITING_TOMORROW_TIME = range(3, 7)
 
 EVENING_HOUR = 23   # Kechqurun hisobot vaqti
 MORNING_HOUR = 8    # Ertalab reja vaqti
@@ -412,17 +412,35 @@ async def handle_tomorrow_tasks(update: Update, context: ContextTypes.DEFAULT_TY
     data = load_data()
     state = data.get("evening_state", {})
 
+    if state.get("state") == "waiting_tomorrow_time":
+        # Vaqtni qabul qilish
+        time_text = update.message.text.strip()
+        try:
+            datetime.strptime(time_text, "%H:%M")
+            pending_task = state.get("pending_task", "")
+            if not data.get("tomorrow_tasks"):
+                data["tomorrow_tasks"] = []
+            data["tomorrow_tasks"].append({"text": pending_task, "time": time_text})
+            data["evening_state"]["state"] = "waiting_tomorrow"
+            save_data(data)
+            await update.message.reply_text(
+                f"✅ *{pending_task}* — soat {time_text}\n\nYana qo'shish uchun yozing yoki /tayyor",
+                parse_mode="Markdown"
+            )
+        except ValueError:
+            await update.message.reply_text("❗ Format: `09:00`", parse_mode="Markdown")
+        return True
+
     if state.get("state") != "waiting_tomorrow":
         return False
 
     task_text = update.message.text.strip()
-    if not data.get("tomorrow_tasks"):
-        data["tomorrow_tasks"] = []
-    data["tomorrow_tasks"].append(task_text)
+    # Vaqtni so'rash
+    data["evening_state"]["state"] = "waiting_tomorrow_time"
+    data["evening_state"]["pending_task"] = task_text
     save_data(data)
-
     await update.message.reply_text(
-        f"✅ Qo'shildi: *{task_text}*\n\nYana qo'shish uchun yozing yoki /tayyor",
+        f"📌 *{task_text}*\n\n⏰ Soat nechada bajarasiz?\nMisol: `10:00`",
         parse_mode="Markdown"
     )
     return True
@@ -438,19 +456,28 @@ async def finish_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tomorrow_tasks = data.get("tomorrow_tasks", [])
     if tomorrow_tasks:
-        # Ertangi vazifalarni asosiy ro'yxatga qo'shish
-        for task_text in tomorrow_tasks:
+        tomorrow_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        for item in tomorrow_tasks:
+            if isinstance(item, dict):
+                task_text = item["text"]
+                task_time = item.get("time", "09:00")
+            else:
+                task_text = item
+                task_time = "09:00"
             task = {
                 "id": len(data["tasks"]) + 1,
                 "text": task_text,
                 "done": False,
                 "created": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "remind_at": None,
+                "remind_at": f"{tomorrow_date} {task_time}",
                 "reminded": False
             }
             data["tasks"].append(task)
 
-        task_list = "\n".join([f"• {t}" for t in tomorrow_tasks])
+        task_list = "\n".join([
+            f"• {item['text']} — ⏰ {item.get('time', '09:00')}" if isinstance(item, dict) else f"• {item}"
+            for item in tomorrow_tasks
+        ])
         await update.message.reply_text(
             f"🌙 *Kechqurun hisoboti tugadi!*\n\n"
             f"Ertangi vazifalar:\n{task_list}\n\n"
